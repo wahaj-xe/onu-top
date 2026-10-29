@@ -30,14 +30,13 @@ A lightweight, terminal-based live health and performance monitor for Huawei GPO
 
 ## Features
 
-- **No External Dependencies:** Built with 100% Python standard library (`socket`, `select`, `subprocess`, `ctypes`). No `pip install` required.
-- **Interactive First-Launch Prompt:** Interactively prompts for Gateway IP, Telnet port, username, and password if not specified via flags or saved credentials.
+- **No External Dependencies:** Built with 100% Python standard library (`socket`, `select`, `subprocess`, `getpass`). No `pip install` required.
+- **Interactive Authentication Prompt:** Prompts directly for ONT Gateway IP, Telnet username, and masked password on launch.
 - **Real-Time CPU & RAM Utilization:** Synchronized with the router's internal `display sysinfo` interface, exactly matching the official Huawei Web GUI (including automatic Linux kernel buffer/cache deduction).
 - **Optical Power & GPON Health:** Live tracking of Rx optical power, Tx optical power, laser module temperature, and signal rating (`[ EXCELLENT ]`, `[ GOOD ]`, `[ WARNING ]`, `[ CRITICAL ]`).
 - **Bit Error Rate (BER) & Error Counters:** Real-time auditing of Bit Interleaved Parity (BIP) errors, Forward Error Correction (FEC), and delimiter frame drops.
 - **WAN Live Throughput & Sparklines:** Real-time download/upload speed meters with 12-sample ASCII sparkline graphs and 32-bit counter rollover compensation.
 - **Multi-Hop Latency Audit:** Concurrent sub-second ICMP ping probes testing LAN Gateway, Cloudflare Anycast (`1.1.1.1`), and Google Primary DNS (`8.8.8.8`).
-- **Encrypted Local Credentials:** Supports optional encryption using Windows DPAPI (`CryptProtectData`) to avoid hardcoding plaintext passwords.
 
 ---
 
@@ -65,7 +64,7 @@ cd onu-top
 ### Usage
 
 #### 1. Interactive Launch (Recommended)
-Simply run the script. It will interactively guide you through connection settings:
+Simply run the script. It will interactively prompt for the Gateway IP, Username, and Password:
 ```bash
 python huawei_ont_top.py
 ```
@@ -75,26 +74,18 @@ python huawei_ont_top.py
 ║        Huawei ONT Live Health & Performance Monitor          ║
 ╚══════════════════════════════════════════════════════════════╝
 
-Enter Huawei ONT Gateway IP [192.168.18.1]: 
-Enter Telnet Port [23]: 
-Enter Telnet Username [root]: 
-Enter Password for root@192.168.18.1: 
-Save credentials securely on this machine with Windows DPAPI? [Y/n]: y
+Enter Huawei ONT Gateway IP: 192.168.18.1
+Enter Telnet Username: root
+Enter Telnet Password for root@192.168.18.1: 
 ```
 
 #### 2. Command Line Arguments
 ```bash
-# Custom host and username with explicit password
+# Pass connection parameters directly
 python huawei_ont_top.py --host 192.168.18.1 --user root -p adminHW1
 
 # Custom refresh interval (e.g. 2 seconds)
 python huawei_ont_top.py --interval 2.0
-
-# Force interactive prompt (ignores saved credentials)
-python huawei_ont_top.py --prompt
-
-# Remove saved encrypted credentials
-python huawei_ont_top.py --forget-credentials
 ```
 
 ---
@@ -103,21 +94,17 @@ python huawei_ont_top.py --forget-credentials
 
 | Argument | Description | Default |
 | :--- | :--- | :--- |
-| `--host HOST` | ONT Gateway IP address | `192.168.18.1` |
+| `--host HOST` | ONT Gateway IP address | Prompted |
 | `--port PORT` | Telnet port | `23` |
-| `--user USER` | Telnet administrative user | `root` |
-| `-p`, `--password` | Telnet password (prompted securely if omitted) | Prompt |
+| `--user USER` | Telnet administrative user | Prompted |
+| `-p`, `--password` | Telnet password (masked prompt if omitted) | Prompted |
 | `--interval SEC` | Refresh cycle interval in seconds | `3.0` |
-| `--prompt` | Force interactive connection dialog | False |
-| `--save-credentials` | Encrypt credentials with Windows DPAPI | False |
-| `--forget-credentials` | Remove saved credentials from local secure store | False |
-| `--no-saved-credentials`| Skip reading local encrypted store for current launch | False |
 
 ---
 
 ## Security & Privacy
 - **Zero Telemetry:** No external internet telemetry, API calls, or third-party cloud connections. All data resides strictly between your terminal and local ONT.
-- **DPAPI Encryption:** When credentials are saved, they are protected with Windows Data Protection API (DPAPI), bound exclusively to your local Windows user session.
+- **Secure Password Prompting:** Passwords are never echoed to the terminal or written to disk.
 
 ---
 

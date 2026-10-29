@@ -13,13 +13,9 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import concurrent.futures
-import ctypes
-from ctypes import wintypes
 from dataclasses import dataclass
 import getpass
-import json
 import os
-from pathlib import Path
 import re
 import select
 import socket
@@ -47,8 +43,6 @@ PROMPT_PATTERN = re.compile(r"(?:SU_WAP>|WAP>|[A-Za-z0-9_-]+[>#])\s*$", re.IGNOR
 LOGIN_PROMPT = re.compile(r"(?:login|username|user ?name|account)\s*[:>]\s*$", re.IGNORECASE)
 PASSWORD_PROMPT = re.compile(r"password\s*[:>]\s*$", re.IGNORECASE)
 
-CREDENTIAL_FILE = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "HuaweiOnuTop" / "credentials.bin"
-
 TRAFFIC_COMMANDS = [
     "display pon statistics",
     "display sfwd port statistics",
@@ -56,85 +50,6 @@ TRAFFIC_COMMANDS = [
     "display poncnt dnstatistic",
     "display waninfo all",
 ]
-
-
-# --- Windows DPAPI Credential Helper ---
-class DataBlob(ctypes.Structure):
-    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
-
-
-def _free_dpapi_blob(blob: DataBlob) -> None:
-    if os.name == "nt":
-        ctypes.windll.kernel32.LocalFree(ctypes.cast(blob.pbData, ctypes.c_void_p))
-
-
-def _dpapi_blob(contents: bytes) -> tuple[DataBlob, ctypes.Array[ctypes.c_byte]]:
-    buffer = (ctypes.c_byte * len(contents)).from_buffer_copy(contents)
-    return DataBlob(len(contents), buffer), buffer
-
-
-def dpapi_protect(contents: bytes) -> bytes:
-    if os.name != "nt":
-        return contents
-    src, _buf = _dpapi_blob(contents)
-    tgt = DataBlob()
-    crypt32 = ctypes.windll.crypt32
-    crypt32.CryptProtectData.argtypes = [
-        ctypes.POINTER(DataBlob), wintypes.LPCWSTR, ctypes.POINTER(DataBlob), ctypes.c_void_p,
-        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(DataBlob),
-    ]
-    crypt32.CryptProtectData.restype = wintypes.BOOL
-    if not crypt32.CryptProtectData(ctypes.byref(src), "Huawei ONU Top", None, None, None, 0, ctypes.byref(tgt)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return ctypes.string_at(tgt.pbData, tgt.cbData)
-    finally:
-        _free_dpapi_blob(tgt)
-
-
-def dpapi_unprotect(contents: bytes) -> bytes:
-    if os.name != "nt":
-        return contents
-    src, _buf = _dpapi_blob(contents)
-    tgt = DataBlob()
-    crypt32 = ctypes.windll.crypt32
-    crypt32.CryptUnprotectData.argtypes = [
-        ctypes.POINTER(DataBlob), ctypes.c_void_p, ctypes.POINTER(DataBlob), ctypes.c_void_p,
-        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(DataBlob),
-    ]
-    crypt32.CryptUnprotectData.restype = wintypes.BOOL
-    if not crypt32.CryptUnprotectData(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(tgt)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        return ctypes.string_at(tgt.pbData, tgt.cbData)
-    finally:
-        _free_dpapi_blob(tgt)
-
-
-def load_saved_credentials(host: str, port: int) -> tuple[str, str] | None:
-    if not CREDENTIAL_FILE.exists():
-        return None
-    try:
-        raw = dpapi_unprotect(CREDENTIAL_FILE.read_bytes()).decode("utf-8")
-        saved = json.loads(raw)
-        if saved.get("host") == host and saved.get("port") == port:
-            return str(saved["user"]), str(saved["password"])
-    except Exception:
-        return None
-    return None
-
-
-def save_credentials(host: str, port: int, user: str, password: str) -> None:
-    payload = json.dumps({"host": host, "port": port, "user": user, "password": password}).encode("utf-8")
-    CREDENTIAL_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CREDENTIAL_FILE.write_bytes(dpapi_protect(payload))
-
-
-def forget_credentials() -> bool:
-    if not CREDENTIAL_FILE.exists():
-        return False
-    CREDENTIAL_FILE.unlink()
-    return True
 
 
 # --- UI Formatting Utilities ---
@@ -739,31 +654,50 @@ def parse_traffic_bytes(text: str) -> tuple[int | None, int | None]:
 
 
 # --- Interactive Connection Prompt ---
-def prompt_user_connection(default_host: str = "192.168.18.1", default_port: int = 23, default_user: str = "root") -> tuple[str, int, str, str, bool]:
-    """Prompt the user interactively for connection settings and credentials."""
+def prompt_user_connection(args: argparse.Namespace) -> tuple[str, int, str, str]:
+    """Interactively prompt the user for IP, Username, and Password."""
     print(f"\n{C_BOLD}╔══════════════════════════════════════════════════════════════╗{C_RESET}")
     print(f"{C_BOLD}║        Huawei ONT Live Health & Performance Monitor          ║{C_RESET}")
     print(f"{C_BOLD}╚══════════════════════════════════════════════════════════════╝{C_RESET}\n")
 
-    h_in = input(f"Enter Huawei ONT Gateway IP [{default_host}]: ").strip()
-    host = h_in if h_in else default_host
+    # 1. Gateway IP
+    if args.host:
+        host = args.host
+        print(f"ONT Gateway IP  : {C_CYAN}{host}{C_RESET}")
+    else:
+        h_in = input("Enter Huawei ONT Gateway IP: ").strip()
+        while not h_in:
+            print(f"{C_YELLOW}Gateway IP cannot be empty.{C_RESET}")
+            h_in = input("Enter Huawei ONT Gateway IP: ").strip()
+        host = h_in
 
-    p_in = input(f"Enter Telnet Port [{default_port}]: ").strip()
-    port = int(p_in) if p_in.isdigit() else default_port
+    # Telnet Port (default 23)
+    port = args.port or 23
 
-    u_in = input(f"Enter Telnet Username [{default_user}]: ").strip()
-    user = u_in if u_in else default_user
+    # 2. Username
+    if args.user:
+        user = args.user
+        print(f"Telnet Username : {C_CYAN}{user}{C_RESET}")
+    else:
+        u_in = input("Enter Telnet Username: ").strip()
+        while not u_in:
+            print(f"{C_YELLOW}Username cannot be empty.{C_RESET}")
+            u_in = input("Enter Telnet Username: ").strip()
+        user = u_in
 
-    password = getpass.getpass(f"Enter Password for {user}@{host}: ")
-    while not password:
-        print(f"{C_YELLOW}Password cannot be empty.{C_RESET}")
-        password = getpass.getpass(f"Enter Password for {user}@{host}: ")
-
-    save_ans = input("Save credentials securely on this machine with Windows DPAPI? [Y/n]: ").strip().lower()
-    save_creds = (save_ans in ("", "y", "yes"))
+    # 3. Password
+    if args.password:
+        password = args.password
+    elif not sys.stdin.isatty():
+        password = sys.stdin.readline().strip()
+    else:
+        password = getpass.getpass(f"Enter Telnet Password for {user}@{host}: ")
+        while not password:
+            print(f"{C_YELLOW}Password cannot be empty.{C_RESET}")
+            password = getpass.getpass(f"Enter Telnet Password for {user}@{host}: ")
 
     print()
-    return host, port, user, password, save_creds
+    return host, port, user, password
 
 
 # --- Main Dashboard Loop ---
@@ -775,62 +709,15 @@ def main() -> None:
     os.system("")  # Enable ANSI in Windows terminal
 
     parser = argparse.ArgumentParser(description="Huawei ONT btop-style Live Health & Performance Monitor")
-    parser.add_argument("--host", default=None, help="ONT IP address (default: interactive prompt or 192.168.18.1)")
-    parser.add_argument("--port", type=int, default=None, help="Telnet port (default: interactive prompt or 23)")
-    parser.add_argument("--user", default=None, help="Telnet username (default: interactive prompt or root)")
+    parser.add_argument("--host", default=None, help="ONT IP address")
+    parser.add_argument("--port", type=int, default=23, help="Telnet port (default: 23)")
+    parser.add_argument("--user", default=None, help="Telnet username")
     parser.add_argument("-p", "--password", default=None, help="Telnet password")
     parser.add_argument("--interval", type=float, default=3.0, help="Refresh interval in seconds (default: 3.0)")
-    parser.add_argument("--save-credentials", action="store_true", help="Encrypt username/password for future launches")
-    parser.add_argument("--forget-credentials", action="store_true", help="Remove saved credentials and exit")
-    parser.add_argument("--no-saved-credentials", action="store_true", help="Ignore saved credentials for this launch")
-    parser.add_argument("--prompt", action="store_true", help="Force interactive prompt for IP and credentials")
     args = parser.parse_args()
 
-    if args.forget_credentials:
-        if forget_credentials():
-            print(f"{C_GREEN}Saved ONU credentials removed.{C_RESET}")
-        else:
-            print(f"{C_DIM}No saved credentials found.{C_RESET}")
-        return
-
-    # Check for saved credentials
-    lookup_host = args.host or "192.168.18.1"
-    lookup_port = args.port or 23
-    saved = None if (args.no_saved_credentials or args.prompt) else load_saved_credentials(lookup_host, lookup_port)
-
-    should_save = False
-
-    if args.prompt:
-        host, port, user, password, should_save = prompt_user_connection(
-            default_host=args.host or "192.168.18.1",
-            default_port=args.port or 23,
-            default_user=args.user or "root",
-        )
-    elif saved and not args.password:
-        host = lookup_host
-        port = lookup_port
-        user, password = saved
-        print(f"{C_DIM}Using saved encrypted credentials for {user}@{host} (use --prompt to change){C_RESET}")
-    elif args.host and args.password:
-        host = args.host
-        port = args.port or 23
-        user = args.user or "root"
-        password = args.password
-        should_save = args.save_credentials
-    else:
-        # First-time launch or missing password -> interactive prompt
-        host, port, user, password, should_save = prompt_user_connection(
-            default_host=args.host or "192.168.18.1",
-            default_port=args.port or 23,
-            default_user=args.user or "root",
-        )
-
-    if should_save or args.save_credentials:
-        try:
-            save_credentials(host, port, user, password)
-            print(f"{C_GREEN}Credentials encrypted securely with Windows DPAPI.{C_RESET}")
-        except Exception as e:
-            print(f"{C_RED}Failed to save credentials: {e}{C_RESET}")
+    # Always prompt user for all 3: IP, username, and password
+    host, port, user, password = prompt_user_connection(args)
 
     session = HuaweiTelnetSession(host, port, user, password)
 
