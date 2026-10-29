@@ -154,6 +154,8 @@ class HuaweiTelnetSession:
         self.logged_in = False
         self.traffic_cmd: str | None = None
         self.cpu_cmd: str | None = None
+        self.login_banner: str = ""
+        self.captured_prompt: str = ""
 
     def is_alive(self) -> bool:
         if self.socket is None or not self.logged_in:
@@ -201,6 +203,8 @@ class HuaweiTelnetSession:
         if not LOGIN_PROMPT.search(login_buf):
             raise RuntimeError(f"Username prompt not found. Banner: {repr(login_buf[-200:])}")
 
+        self.login_banner = login_buf
+
         # Step 2: Send username
         self.socket.sendall((self.username + "\r\n").encode("utf-8"))
 
@@ -232,6 +236,7 @@ class HuaweiTelnetSession:
                 for line in prompt_buf.splitlines():
                     if PROMPT_PATTERN.search(line.strip()):
                         self.logged_in = True
+                        self.captured_prompt = line.strip()
                         return
 
         if not self.logged_in:
@@ -395,19 +400,136 @@ def parse_optic_power(text: str) -> tuple[float | None, float | None, float | No
     return rx_power, tx_power, temp
 
 
-def parse_device_info(text: str) -> dict[str, float | str]:
-    """Parse hardware specifications from display deviceInfo."""
-    info: dict[str, float | str] = {}
-    m_mem = re.search(r"TotalMemory\s*=\s*(\d+)", text, re.I)
+@dataclass
+class OntDeviceSpecs:
+    model: str = "ONT"
+    cpu_hardware: str = "Processor Load"
+    total_mem_mb: float = 256.0
+    total_flash_mb: float = 128.0
+    network_label: str = "GPON WAN Interface"
+    hardware_info: str = ""
+    firmware_version: str = ""
+
+
+def query_ont_device_specs(session: HuaweiTelnetSession) -> OntDeviceSpecs:
+    """Dynamically probe and detect the exact ONT model, CPU architecture, RAM, and network capabilities."""
+    specs = OntDeviceSpecs()
+
+    # Query information commands safely
+    dev_text = session.execute("display deviceInfo")
+    ver_text = session.execute("display version")
+    cpu_text = session.execute("display cpu info")
+    mem_text = session.execute("display memory info")
+    wifi_text = session.execute("display wifi radio")
+
+    combined_text = f"{dev_text}\n{ver_text}\n{session.login_banner}\n{session.captured_prompt}"
+
+    # 1. Dynamic ONT Model Detection (Supports OptiXstar, EchoLife, SmartAX, and standard GPON/EPON ONTs)
+    detected_model = None
+    model_patterns = [
+        r"ModelName\s*=\s*([^\r\n]+)",
+        r"ProductClass\s*=\s*([^\r\n]+)",
+        r"Product\s*Name\s*[:=]\s*([^\r\n]+)",
+        r"Model\s*[:=]\s*([^\r\n]+)",
+        r"Description\s*=\s*(?:OptiXstar|EchoLife|SmartAX)?\s*([A-Za-z0-9_-]+)",
+        r"Description\s*=\s*([^\r\n]+)",
+    ]
+    for pat in model_patterns:
+        m = re.search(pat, dev_text + "\n" + ver_text, re.I)
+        if m:
+            cand = m.group(1).strip()
+            # Clean common prefixes or trailing suffixes like "GPON Terminal..."
+            cand = re.sub(r"\s*(?:GPON|EPON|XPON)\s+Terminal.*$", "", cand, flags=re.I).strip()
+            if cand and not any(err in cand.lower() for err in ["error", "command", "not exist", "failed"]):
+                detected_model = cand
+                break
+
+    if not detected_model:
+        # Fallback regex looking for Huawei model numbers like HG8145X6-10, EG8145V5, HG8245H, HN8145V, etc.
+        m_ont = re.search(r"\b((?:HG|EG|HN|HS)\d{4}[A-Za-z0-9_-]*)\b", combined_text, re.I)
+        if m_ont:
+            detected_model = m_ont.group(1).strip()
+        else:
+            # Check prompt (e.g. HG8245H>)
+            m_p = re.search(r"([A-Za-z0-9_-]+)[>#]", session.captured_prompt)
+            if m_p and m_p.group(1).upper() not in ("WAP", "SU_WAP", "SHELL", "CLI"):
+                detected_model = m_p.group(1).strip()
+            else:
+                detected_model = "ONT"
+
+    # Normalize detected model (strip leading "Huawei ")
+    detected_model = re.sub(r"^Huawei\s+", "", detected_model, flags=re.I).strip()
+    specs.model = detected_model
+
+    # 2. CPU Architecture and Core Count
+    cores = len(re.findall(r"processor\s*:\s*\d+", cpu_text, re.I))
+    core_name = {1: "Single-Core", 2: "Dual-Core", 4: "Quad-Core", 8: "Octa-Core"}.get(cores, f"{cores}-Core" if cores > 0 else "CPU")
+
+    m_hw = re.search(r"Hardware\s*:\s*([^\r\n]+)", cpu_text, re.I)
+    hw_str = m_hw.group(1).strip() if m_hw else ""
+    hw_lower = hw_str.lower() + " " + cpu_text.lower()
+
+    if "hisilicon" in hw_lower:
+        specs.cpu_hardware = f"HiSilicon {core_name}"
+    elif "broadcom" in hw_lower or "bcm" in hw_lower:
+        specs.cpu_hardware = f"Broadcom {core_name}"
+    elif "mediatek" in hw_lower or "mtk" in hw_lower:
+        specs.cpu_hardware = f"MediaTek {core_name}"
+    elif "realtek" in hw_lower or "rtl" in hw_lower:
+        specs.cpu_hardware = f"Realtek {core_name}"
+    elif hw_str and "error" not in hw_lower:
+        specs.cpu_hardware = f"{hw_str.split()[0]} {core_name}"
+    elif "arm" in hw_lower:
+        specs.cpu_hardware = f"ARM {core_name}"
+    elif "mips" in hw_lower:
+        specs.cpu_hardware = f"MIPS {core_name}"
+    elif cores > 0:
+        specs.cpu_hardware = f"Processor {core_name}"
+    else:
+        specs.cpu_hardware = "Processor Load"
+
+    # 3. Total Memory (RAM)
+    m_mem = re.search(r"TotalMemory\s*=\s*(\d+)", dev_text, re.I)
     if m_mem:
-        info["mem_mb"] = float(m_mem.group(1))
-    m_flash = re.search(r"TotalFlash\s*=\s*(\d+)", text, re.I)
+        specs.total_mem_mb = float(m_mem.group(1))
+    else:
+        m_mem_info = re.search(r"Mem:\s*(\d+)", mem_text)
+        if m_mem_info:
+            kb = float(m_mem_info.group(1))
+            for s in [64, 128, 256, 512, 1024, 2048]:
+                if kb <= s * 1024:
+                    specs.total_mem_mb = float(s)
+                    break
+
+    # 4. Total Flash Storage
+    m_flash = re.search(r"TotalFlash\s*=\s*(\d+)", dev_text, re.I)
     if m_flash:
-        info["flash_mb"] = float(m_flash.group(1))
-    m_model = re.search(r"ModelName\s*=\s*([^\r\n]+)", text, re.I)
-    if m_model:
-        info["model"] = m_model.group(1).strip()
-    return info
+        specs.total_flash_mb = float(m_flash.group(1))
+
+    # 5. Network / Wi-Fi Capability
+    m_hwinfo = re.search(r"HardwareInfo\s*=\s*([^\r\n]+)", dev_text, re.I)
+    hwinfo = m_hwinfo.group(1).strip() if m_hwinfo else ""
+    specs.hardware_info = hwinfo
+
+    m_ver = re.search(r"main software version\s*=\s*([^\r\n]+)", ver_text, re.I)
+    if m_ver:
+        specs.firmware_version = m_ver.group(1).strip()
+
+    model_upper = specs.model.upper()
+    if "160 MHZ" in wifi_text.upper() or "X6" in model_upper or "AX" in model_upper:
+        specs.network_label = "Wi-Fi 6 AX3000"
+    elif "80 MHZ" in wifi_text.upper() or "V5" in model_upper or "AC" in model_upper:
+        specs.network_label = "Wi-Fi 5 AC1200"
+    elif "2.4G" in wifi_text or "N300" in model_upper or "N" in model_upper:
+        specs.network_label = "Wi-Fi 4 N300"
+    elif "WI-FI" in hwinfo.upper() or "WIFI" in hwinfo.upper():
+        specs.network_label = "Wi-Fi Dual-Band"
+    elif "GPON" in hwinfo.upper() or "GE" in hwinfo.upper():
+        specs.network_label = "Gigabit GPON"
+    else:
+        specs.network_label = "GPON WAN Interface"
+
+    return specs
 
 
 def parse_cpu_ultimate(text: str) -> float | None:
@@ -728,12 +850,10 @@ def main() -> None:
     down_history: deque[float | None] = deque(maxlen=12)
     up_history: deque[float | None] = deque(maxlen=12)
 
-    total_mem_mb = 256.0
-    total_flash_mb = 128.0
-    model_name = "HG8145X6-10"
+    specs = OntDeviceSpecs()
     dev_info_queried = False
-    ont_id = "44"
-    ont_state = "O5 Operational"
+    ont_id = "—"
+    ont_state = "Connecting"
 
     print("\033[2J\033[H", end="")
 
@@ -758,7 +878,7 @@ def main() -> None:
             status_note = f"{C_GREEN}Connected{C_RESET}"
             rx_dbm, tx_dbm, laser_temp = None, None, None
             cpu_pct = None
-            used_mem_mb, tot_mem_mb, free_mem_mb, mem_pct = None, total_mem_mb, None, None
+            used_mem_mb, tot_mem_mb, free_mem_mb, mem_pct = None, specs.total_mem_mb, None, None
             tot_rx, tot_tx = None, None
             pon_raw = ""
             pon_errors = {"bip": 0, "fec_uncorr": 0, "fec_corr": 0, "crc": 0, "ber_str": "0.0e-00", "clean": True}
@@ -766,31 +886,27 @@ def main() -> None:
             try:
                 if not session.is_alive():
                     session.connect()
+                    dev_info_queried = False
 
-                # Query static device info once on connect
+                # Dynamically probe and identify ONT device specs on connect
                 if not dev_info_queried:
-                    dev_raw = session.execute("display deviceInfo")
-                    d_parsed = parse_device_info(dev_raw)
-                    if "mem_mb" in d_parsed:
-                        total_mem_mb = float(d_parsed["mem_mb"])
-                    if "flash_mb" in d_parsed:
-                        total_flash_mb = float(d_parsed["flash_mb"])
-                    if "model" in d_parsed:
-                        model_name = str(d_parsed["model"])
+                    specs = query_ont_device_specs(session)
                     dev_info_queried = True
 
                 # Step A & B: Query real-time CPU & Memory matching Web GUI
                 c_sys = session.execute("display sysinfo")
                 cpu_pct = parse_cpu_ultimate(c_sys)
-                used_mem_mb, tot_mem_mb, free_mem_mb, mem_pct = parse_memory_comprehensive(c_sys, total_mem_mb)
+                used_mem_mb, tot_mem_mb, free_mem_mb, mem_pct = parse_memory_comprehensive(c_sys, specs.total_mem_mb)
 
                 if cpu_pct is None:
                     cpu_pct = session.fetch_cpu()
                 if mem_pct is None:
-                    used_mem_mb, tot_mem_mb, free_mem_mb, mem_pct = session.fetch_memory(total_mem_mb)
+                    used_mem_mb, tot_mem_mb, free_mem_mb, mem_pct = session.fetch_memory(specs.total_mem_mb)
 
                 # Step C: Query ONT registration and ID
                 c_onu = session.execute("display onu info")
+                if "error" in c_onu.lower() or not c_onu.strip():
+                    c_onu = session.execute("display ont info")
                 onu_p = parse_onu_info(c_onu)
                 if onu_p.get("ont_id"):
                     ont_id = onu_p["ont_id"]
@@ -812,6 +928,7 @@ def main() -> None:
             except Exception as e:
                 status_note = f"{C_YELLOW}Connecting...{C_RESET}"
                 session.close()
+                dev_info_queried = False
 
             # 3. Calculate Throughput Rates & Rollover
             rx_rate: float | None = None
@@ -848,7 +965,11 @@ def main() -> None:
             # ==========================================
             # PANEL 1: btop CPU & Memory / System Box
             # ==========================================
-            title_text = f"╭─{C_RED}¹cpu{C_RESET}─{C_BOLD}HUAWEI {model_name}{C_RESET} ({host})"
+            if specs.model and specs.model != "ONT":
+                title_brand = f"HUAWEI {specs.model}"
+            else:
+                title_brand = "HUAWEI ONT"
+            title_text = f"╭─{C_RED}¹cpu{C_RESET}─{C_BOLD}{title_brand}{C_RESET} ({host})"
             time_text = f"─ {now_clock} ── Telnet: {status_note} ─╮"
             dashes_cpu = W - len(ANSI_RE.sub("", title_text)) - len(ANSI_RE.sub("", time_text))
             out.append(f"{title_text}{'─' * max(1, dashes_cpu)}{time_text}\n")
@@ -857,7 +978,7 @@ def main() -> None:
             c_val_str = f"{cpu_pct:3.0f}%" if cpu_pct is not None else "  — "
             c_bar = btop_bar(cpu_pct, 16)
             c_left = f"  CPU {c_bar} {c_val_str}   Processor Load"
-            c_right = f"{C_DIM}HiSilicon Dual-Core{C_RESET}"
+            c_right = f"{C_DIM}{specs.cpu_hardware}{C_RESET}"
             out.append(make_box_line(c_left, right_styled=c_right))
 
             # Memory Bar
@@ -868,12 +989,12 @@ def main() -> None:
             else:
                 mem_detail = f"System RAM {tot_mem_mb:.0f} MB"
             m_left = f"  MEM {m_bar} {m_val_str}   {mem_detail}"
-            m_right = f"{C_DIM}256 MB DDR3{C_RESET}"
+            m_right = f"{C_DIM}{int(specs.total_mem_mb)} MB RAM{C_RESET}"
             out.append(make_box_line(m_left, right_styled=m_right))
 
             # Flash Storage / Firmware
             f_bar = btop_bar(48, 16)
-            f_left = f"  FLS {f_bar}  48%   {total_flash_mb:.0f} MB Onboard Flash"
+            f_left = f"  FLS {f_bar}  48%   {specs.total_flash_mb:.0f} MB Onboard Flash"
             f_right = f"{C_DIM}Dual-Bank OS{C_RESET}"
             out.append(make_box_line(f_left, right_styled=f_right))
 
@@ -932,7 +1053,7 @@ def main() -> None:
             # PANEL 3: btop WAN & Traffic Box
             # ==========================================
             net_hdr = f"╭─{C_CYAN}³net{C_RESET}──{C_BOLD}WAN & Internet Throughput{C_RESET}─"
-            net_suffix = f"─ {C_DIM}Wi-Fi 6 AX3000{C_RESET} ─╮"
+            net_suffix = f"─ {C_DIM}{specs.network_label}{C_RESET} ─╮"
             dashes_net = W - len(ANSI_RE.sub("", net_hdr)) - len(ANSI_RE.sub("", net_suffix))
             out.append(f"{net_hdr}{'─' * max(1, dashes_net)}{net_suffix}\n")
 

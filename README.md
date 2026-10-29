@@ -32,6 +32,7 @@ A lightweight, terminal-based live health and performance monitor for Huawei GPO
 
 - **No External Dependencies:** Built with 100% Python standard library (`socket`, `select`, `subprocess`, `getpass`). No `pip install` required.
 - **Interactive Authentication Prompt:** Prompts directly for ONT Gateway IP, Telnet username, and masked password on launch.
+- **Automatic Model & Hardware Auto-Detection:** Dynamically queries the ONT over Telnet upon connection to identify the exact device model (OptiXstar, EchoLife, etc.), CPU vendor & core count, system RAM capacity, and Wi-Fi/uplink capabilities.
 - **Real-Time CPU & RAM Utilization:** Synchronized with the router's internal `display sysinfo` interface, exactly matching the official Huawei Web GUI (including automatic Linux kernel buffer/cache deduction).
 - **Optical Power & GPON Health:** Live tracking of Rx optical power, Tx optical power, laser module temperature, and signal rating (`[ EXCELLENT ]`, `[ GOOD ]`, `[ WARNING ]`, `[ CRITICAL ]`).
 - **Bit Error Rate (BER) & Error Counters:** Real-time auditing of Bit Interleaved Parity (BIP) errors, Forward Error Correction (FEC), and delimiter frame drops.
