@@ -58,8 +58,8 @@ Tested and verified on Huawei ONTs running Dopra Linux / V5 firmware:
 ### Installation
 Clone the repository:
 ```bash
-git clone https://github.com/wahaj-xe/huawei-ont-top.git
-cd huawei-ont-top
+git clone https://github.com/wahaj-xe/onu-top.git
+cd onu-top
 ```
 
 ### Usage
