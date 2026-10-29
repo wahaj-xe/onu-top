@@ -49,17 +49,58 @@ Tested and verified on Huawei ONTs running Dopra Linux / V5 firmware:
 
 ---
 
-## Getting Started
+## Prerequisites
 
-### Prerequisites
-1. Python 3.9 or higher.
-2. Ensure Telnet access is enabled on your Huawei ONT (typically under **Security** / **Maintenance** / **Device Access Control** in the Web GUI).
+Before running `onu-top`, ensure your setup meets the following requirements:
 
-### Installation
-Clone the repository:
+### 1. Python Environment
+- **Python 3.8 or higher** (Python 3.9+ recommended).
+- **Zero External Dependencies:** Built 100% using Python's standard library (`socket`, `select`, `subprocess`, `getpass`). No `pip install` required.
+- *(Windows)* Ensure Python is added to your system `PATH` (the one-line PowerShell installer verifies this automatically).
+
+### 2. Router / ONT Telnet Access
+- **Telnet Enabled on ONT:** Ensure LAN Telnet access is enabled on your Huawei ONT:
+  1. Log into your router's Web GUI (e.g. `http://192.168.18.1` or `http://192.168.100.1`).
+  2. Navigate to **Security** (or **Maintenance** / **Management**) &rarr; **Device Access Control** (or **Service Access Control**).
+  3. Check/Enable **Telnet** on the **LAN** interface and click **Apply**.
+- **Credentials:**
+  - **Gateway IP:** Usually `192.168.18.1` (or `192.168.1.1` / `192.168.100.1`).
+  - **Username:** Typically `root` (or `admin` / operator default).
+  - **Password:** Your ONT Telnet administrative password (e.g., `adminHW1`, `adminHW`, or custom).
+
+### 3. Network Connectivity
+- Your PC must be connected to the ONT via Wi-Fi or Ethernet LAN.
+
+---
+
+## Installation & Quick Start
+
+### Option A: One-Liner Quick Install (Windows PowerShell)
+
+Open PowerShell and paste this command:
+
+```powershell
+irm https://raw.githubusercontent.com/wahaj-xe/onu-top/main/install.ps1 | iex
+```
+
+**What this automated installer does:**
+1. Checks for Python 3.8+ (and attempts automatic installation via `winget` if missing).
+2. Installs `huawei_ont_top.py` to `%LOCALAPPDATA%\Programs\onu-top`.
+3. Adds the directory to your user `PATH` and creates `onu-top` command shims.
+4. Generates an optional Desktop shortcut.
+5. You can now launch it anytime from **any terminal** by simply typing:
+   ```bash
+   onu-top
+   ```
+
+---
+
+### Option B: Manual Git Clone (Windows, Linux, macOS)
+
 ```bash
 git clone https://github.com/wahaj-xe/onu-top.git
 cd onu-top
+python huawei_ont_top.py
 ```
 
 ### Usage
