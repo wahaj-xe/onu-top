@@ -55,8 +55,9 @@ Before running `onu-top`, ensure your setup meets the following requirements:
 
 ### 1. Python Environment
 - **Python 3.8 or higher** (Python 3.9+ recommended).
+- **Automated Python Setup:** The one-line installers (Windows PowerShell & macOS Terminal) will check for Python automatically; if missing, they prompt you with a single confirmation to automatically download and install Python for you.
 - **Zero External Dependencies:** Built 100% using Python's standard library (`socket`, `select`, `subprocess`, `getpass`). No `pip install` required.
-- *(Windows)* Ensure Python is added to your system `PATH` (the one-line PowerShell installer verifies this automatically).
+- **Cross-Platform:** Runs natively on **Windows**, **macOS (Apple Silicon M1/M2/M3/M4 & Intel)**, and **Linux**.
 
 ### 2. Router / ONT Telnet Access
 - **Telnet Enabled on ONT:** Ensure LAN Telnet access is enabled on your Huawei ONT:
@@ -69,33 +70,42 @@ Before running `onu-top`, ensure your setup meets the following requirements:
   - **Password:** Your ONT Telnet administrative password (e.g., `adminHW1`, `adminHW`, or custom).
 
 ### 3. Network Connectivity
-- Your PC must be connected to the ONT via Wi-Fi or Ethernet LAN.
+- Your computer must be connected to the ONT via Wi-Fi or Ethernet LAN.
 
 ---
 
 ## Installation & Quick Start
 
-### Option A: One-Liner Quick Install (Windows PowerShell)
+### Windows (PowerShell)
 
-Open PowerShell and paste this command:
+Open PowerShell or Windows Terminal and run:
 
 ```powershell
 irm https://raw.githubusercontent.com/wahaj-xe/onu-top/main/install.ps1 | iex
 ```
 
-**What this automated installer does:**
-1. Checks for Python 3.8+ (and attempts automatic installation via `winget` if missing).
-2. Installs `huawei_ont_top.py` to `%LOCALAPPDATA%\Programs\onu-top`.
-3. Adds the directory to your user `PATH` and creates `onu-top` command shims.
-4. Generates an optional Desktop shortcut.
-5. You can now launch it anytime from **any terminal** by simply typing:
+### macOS / Apple Silicon & Intel (Terminal)
+
+Open Terminal and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wahaj-xe/onu-top/main/install.sh | bash
+```
+
+---
+
+### What the Automated Installer Does:
+1. **Checks Prerequisites**: Checks if Python 3.8+ is installed. If missing, it prompts you to install Python automatically (via `winget` / official python.org installer on Windows, or Homebrew / official universal pkg on macOS).
+2. **Installs the Tool**: Deploys `huawei_ont_top.py` to your local user binary directory (`%LOCALAPPDATA%\Programs\onu-top` on Windows, `~/.local/bin` on macOS/Linux).
+3. **Configures PATH**: Adds the command to your shell `PATH` (Windows user PATH / `~/.zshrc` on macOS).
+4. **Global Command**: You can now run `onu-top` anytime from any terminal by typing:
    ```bash
    onu-top
    ```
 
 ---
 
-### Option B: Manual Git Clone (Windows, Linux, macOS)
+### Manual Clone (Any OS)
 
 ```bash
 git clone https://github.com/wahaj-xe/onu-top.git

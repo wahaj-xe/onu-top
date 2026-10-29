@@ -344,9 +344,15 @@ class PingResult:
 
 
 def ping_host(target: str, label: str) -> PingResult:
-    """Run a fast 2-packet ping with 600ms timeout."""
+    """Run a fast 2-packet ping with sub-second timeout across Windows, macOS (Apple Silicon/Intel), and Linux."""
     try:
-        cmd = ["ping", "-n", "2", "-w", "600", target] if os.name == "nt" else ["ping", "-c", "2", "-W", "1", target]
+        if sys.platform == "win32":
+            cmd = ["ping", "-n", "2", "-w", "600", target]
+        elif sys.platform == "darwin":
+            cmd = ["ping", "-c", "2", "-W", "1000", target]
+        else:
+            cmd = ["ping", "-c", "2", "-W", "1", target]
+
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=2.0)
         out = proc.stdout + proc.stderr
 
@@ -356,7 +362,9 @@ def ping_host(target: str, label: str) -> PingResult:
 
         avg_match = re.search(r"Average\s*=\s*(\d+(?:\.\d+)?)ms", out, re.I)
         if not avg_match:
-            avg_match = re.search(r"= [^/]+/([^/]+)/", out)
+            avg_match = re.search(r"= [^/]+/([0-9.]+)/", out)
+        if not avg_match:
+            avg_match = re.search(r"/\s*([0-9.]+)\s*/", out)
 
         loss = float(loss_match.group(1)) if loss_match else (0.0 if proc.returncode == 0 else 100.0)
         avg = float(avg_match.group(1)) if avg_match else None
